@@ -1,0 +1,20 @@
+{
+  "activeNiche": "cars",
+  "niches": {
+    "cars": {
+      "subreddits": [
+        "whatcarshouldIbuy",
+        "usedcars",
+        "carsales"
+      ]
+    },
+    "houses": {
+      "subreddits": [
+        "realestate",
+        "househunting",
+        "RealEstateWholesaling",
+        "REI"
+      ]
+    }
+  }
+}
