@@ -232,6 +232,45 @@ app.post('/api/saved-leads', async (req, res) => {
   }
 });
 
+app.get('/api/debug', async (req, res) => {
+  const diagnostics = {
+    env: {
+      SUPABASE_URL: !!process.env.SUPABASE_URL,
+      SUPABASE_KEY: !!process.env.SUPABASE_KEY ? 'Present (Hidden)' : 'Missing',
+      GEMINI_API_KEY: !!process.env.GEMINI_API_KEY ? 'Present (Hidden)' : 'Missing',
+      NODE_ENV: process.env.NODE_ENV
+    },
+    supabase: null,
+    reddit: {}
+  };
+
+  // Check Supabase
+  try {
+    const { count, error } = await supabase.from('settings').select('*', { count: 'exact', head: true });
+    if (error) throw error;
+    diagnostics.supabase = { status: 'Connected', settingsCount: count };
+  } catch (err) {
+    diagnostics.supabase = { status: 'Failed', error: err.message };
+  }
+
+  // Check Reddit (Sample)
+  try {
+    const response = await axios.get('https://www.reddit.com/r/cars/new.json?limit=1', {
+      headers: { 'User-Agent': 'web:apex-wholesale:v1.0.0 (by /u/no_user_yet)' },
+      timeout: 5000
+    });
+    diagnostics.reddit = { status: 'Connected', statusCode: response.status };
+  } catch (err) {
+    diagnostics.reddit = { 
+      status: 'Blocked', 
+      statusCode: err.response?.status,
+      message: err.message 
+    };
+  }
+
+  res.json(diagnostics);
+});
+
 app.get('/api/settings', async (req, res) => {
   res.json(await getSettings());
 });
