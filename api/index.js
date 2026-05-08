@@ -41,12 +41,12 @@ const getSettings = async () => {
       .select('data')
       .eq('id', 1)
       .single();
-    
+
     if (error) throw error;
     return data.data;
   } catch (error) {
     console.error('Error reading settings from Supabase:', error.message);
-    return { 
+    return {
       activeNiche: 'cars',
       niches: {
         cars: { subreddits: ['whatcarshouldIbuy', 'usedcars', 'carsales'] },
@@ -62,7 +62,7 @@ const saveSettings = async (settings) => {
     const { error } = await supabase
       .from('settings')
       .upsert({ id: 1, data: settings });
-    
+
     if (error) throw error;
     return true;
   } catch (error) {
@@ -81,14 +81,14 @@ app.get('/api/leads', async (req, res) => {
   try {
     const niche = req.query.niche || 'cars';
     const settings = await getSettings();
-    
+
     // 1. Fetch existing leads to avoid duplicates
     const { data: existingLeads, error: fetchError } = await supabase
       .from('leads')
       .select('id')
       .eq('niche', niche)
       .limit(200);
-    
+
     if (fetchError) {
       console.error('Supabase fetch error:', fetchError.message);
       // Don't crash, just proceed with empty existing list
@@ -96,7 +96,7 @@ app.get('/api/leads', async (req, res) => {
 
     const existingIds = new Set((existingLeads || []).map(l => l.id));
     const subreddits = settings.niches?.[niche]?.subreddits || [];
-    
+
     // 2. Fetch from Reddit in parallel
     const redditResults = await Promise.allSettled(
       subreddits.map(async (sub) => {
@@ -104,7 +104,7 @@ app.get('/api/leads', async (req, res) => {
         try {
           // Try JSON first (more data)
           const response = await axios.get(`https://www.reddit.com/r/${sub}/new.json?limit=15`, {
-            headers: { 
+            headers: {
               'User-Agent': 'web:apex-wholesale:v1.0.0 (by /u/no_user_yet)',
               'Accept': 'application/json'
             },
@@ -149,7 +149,7 @@ app.get('/api/leads', async (req, res) => {
           if (existingIds.has(data.id)) continue;
 
           const combinedText = (data.title + ' ' + (data.content || '')).toLowerCase();
-          
+
           // Smart blacklist: Match whole words only to avoid blocking things like "Valencia" for "va"
           const isSpam = spamKeywords.some(kw => {
             const regex = new RegExp(`\\b${kw.toLowerCase()}\\b`, 'i');
@@ -157,7 +157,7 @@ app.get('/api/leads', async (req, res) => {
           });
 
           if (isSpam) continue;
-          
+
           newLeadsFromReddit.push({
             id: data.id,
             niche: niche,
@@ -230,7 +230,7 @@ app.get('/api/supply', async (req, res) => {
       .select('*')
       .eq('niche', niche)
       .order('created_at', { ascending: false });
-    
+
     if (error) throw error;
     res.json(data || []);
   } catch (err) {
@@ -246,7 +246,7 @@ app.post('/api/inventory', async (req, res) => {
       .insert([newItem])
       .select()
       .single();
-    
+
     if (error) throw error;
     res.json({ success: true, item: data });
   } catch (err) {
@@ -286,146 +286,39 @@ app.post('/api/saved-leads', async (req, res) => {
 });
 
 app.get('/api/debug', async (req, res) => {
-  const niche = req.query.niche || 'cars';
   const diagnostics = {
-    requestedNiche: niche,
     env: {
       SUPABASE_URL: !!process.env.SUPABASE_URL,
       SUPABASE_KEY: !!process.env.SUPABASE_KEY ? 'Present (Hidden)' : 'Missing',
       GEMINI_API_KEY: !!process.env.GEMINI_API_KEY ? 'Present (Hidden)' : 'Missing',
-      NODE_ENV: process.env.NODE_ENV
     },
-    supabase: null,
-    reddit: {}
+    supabase: { status: 'Checking...' },
+    nicheStatus: {}
   };
 
-  // Check Supabase
   try {
     const { count, error } = await supabase.from('leads').select('*', { count: 'exact', head: true });
-    const { count: settingsCount } = await supabase.from('settings').select('*', { count: 'exact', head: true });
-    if (error) throw error;
-    diagnostics.supabase = { 
-      status: 'Connected', 
-      settingsCount: settingsCount,
-      totalLeadsInDb: count,
-      insertTest: null
-    };
-
-    // Try a test insert
-    const testId = `test-${Date.now()}`;
-    const { error: testError } = await supabase.from('leads').insert([{
-      id: testId,
-      niche: 'debug',
-      title: 'Debug Test lead',
-      content: 'This is a test to verify database writes.',
-      time: new Date().toISOString()
-    }]);
-
-    if (testError) {
-      diagnostics.supabase.insertTest = `Failed: ${testError.message} (${testError.code})`;
-    } else {
-      diagnostics.supabase.insertTest = 'Success! Database is writable.';
-      // Clean up the test lead
-      await supabase.from('leads').delete().eq('id', testId);
-    }
+    diagnostics.supabase = { status: error ? 'Error' : 'Connected', totalLeads: count || 0 };
     
-    // Check Settings Detail
     const settings = await getSettings();
-    diagnostics.settingsDetail = {
-      niche: niche,
-      subreddits: settings.niches?.[niche]?.subreddits || [],
-      blacklistCount: settings.blacklist?.length || 0
-    };
+    const niches = ['cars', 'houses'];
 
-    // --- FULL FETCH REPORT ---
-    const fetchReport = { niche: niche, steps: [] };
-    try {
-      const feed = await parser.parseURL(`https://www.reddit.com/r/cars/new/.rss`);
-      fetchReport.rawCount = feed.items.length;
-      
-      const spamKeywords = settings.blacklist || [];
-      const processed = feed.items.map(item => {
-        const title = item.title;
-        const content = item.contentSnippet || item.content || '';
-        const combinedText = (title + ' ' + content).toLowerCase();
-        
-        const hit = spamKeywords.find(kw => {
-          const regex = new RegExp(`\\b${kw.toLowerCase()}\\b`, 'i');
-          return regex.test(combinedText);
-        });
-        
-        return {
-          title: title.substring(0, 30) + '...',
-          isSpam: !!hit,
-          spamKeyword: hit || null
-        };
-      });
-      
-      fetchReport.filteredCount = processed.filter(p => !p.isSpam).length;
-      fetchReport.sampleAnalysis = processed.slice(0, 5);
-      
-      // Do one real save
-      const realSample = feed.items.find(item => {
-        const combined = (item.title + ' ' + (item.contentSnippet || '')).toLowerCase();
-        return !spamKeywords.some(kw => {
-          const regex = new RegExp(`\\b${kw.toLowerCase()}\\b`, 'i');
-          return regex.test(combined);
-        });
-      });
+    for (const niche of niches) {
+      const subreddits = settings.niches?.[niche]?.subreddits || [];
+      const testSub = subreddits[0];
+      const status = { sub: testSub, rss: 'Pending' };
 
-      if (realSample) {
-        const lead = {
-          id: realSample.id?.split('_')?.pop() || realSample.guid || `real-${Date.now()}`,
-          niche: niche,
-          source: 'reddit',
-          layer: 'gray',
-          title: `[LIVE] ${realSample.title}`,
-          content: (realSample.contentSnippet || realSample.content || '').substring(0, 500),
-          budget: 'Unknown',
-          location: 'Remote/Unknown',
-          time: new Date().toISOString(),
-          url: realSample.link
-        };
-        const { error: finalError } = await supabase.from('leads').insert([lead]);
-        fetchReport.finalSaveStatus = finalError ? `Failed: ${finalError.message}` : 'Success! Saved 1 lead.';
-      } else {
-        fetchReport.finalSaveStatus = 'No non-spam leads found to save.';
+      try {
+        const feed = await parser.parseURL(`https://www.reddit.com/r/${testSub}/new/.rss`);
+        status.rss = `Connected (${feed.items.length} posts found)`;
+        status.sampleTitle = feed.items[0]?.title.substring(0, 40) + '...';
+      } catch (e) {
+        status.rss = `Blocked: ${e.message}`;
       }
-
-    } catch (err) {
-      fetchReport.error = err.message;
+      diagnostics.nicheStatus[niche] = status;
     }
-    diagnostics.fullFetchReport = fetchReport;
-
   } catch (err) {
-    diagnostics.supabase = { status: 'Failed', error: err.message };
-  }
-
-  // Check Reddit (Sample)
-  try {
-    const jsonRes = await axios.get(`https://www.reddit.com/r/cars/new.json?limit=1`, {
-      headers: { 'User-Agent': 'web:apex-wholesale:v1.0.0 (by /u/no_user_yet)' },
-      timeout: 3000
-    });
-    diagnostics.reddit.json = { status: 'Connected', statusCode: jsonRes.status };
-  } catch (err) {
-    diagnostics.reddit.json = { status: 'Blocked', statusCode: err.response?.status, message: err.message };
-  }
-
-  try {
-    const feed = await parser.parseURL('https://www.reddit.com/r/cars/new/.rss');
-    const firstItem = feed.items[0] || {};
-    diagnostics.reddit.rss = { 
-      status: 'Connected', 
-      title: feed.title,
-      samplePost: {
-        id: firstItem.id?.split('_')?.pop() || firstItem.guid,
-        title: firstItem.title,
-        date: firstItem.isoDate
-      }
-    };
-  } catch (err) {
-    diagnostics.reddit.rss = { status: 'Blocked', message: err.message };
+    diagnostics.supabase.status = `Failed: ${err.message}`;
   }
 
   res.json(diagnostics);
@@ -449,7 +342,7 @@ app.post('/api/analyze-gemini', async (req, res) => {
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-    const prompt = niche === 'houses' 
+    const prompt = niche === 'houses'
       ? `Analyze this real estate lead: ${lead.title} ${lead.content}. Return ONLY JSON: {"intentLayer": "blue/yellow/orange", "budget": "string", "propertyType": "string", "bedsBaths": "string"}`
       : `Analyze this car lead: ${lead.title} ${lead.content}. Return ONLY JSON: {"intentLayer": "blue/yellow/orange", "budget": "string", "makeModel": ["string"]}`;
 
