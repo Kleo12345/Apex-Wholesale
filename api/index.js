@@ -4,6 +4,13 @@ import dotenv from 'dotenv';
 import axios from 'axios';
 import { createClient } from '@supabase/supabase-js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import Parser from 'rss-parser';
+
+const parser = new Parser({
+  headers: {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) RSS-Reader/1.0',
+  }
+});
 
 dotenv.config();
 
@@ -93,14 +100,41 @@ app.get('/api/leads', async (req, res) => {
     // 2. Fetch from Reddit in parallel
     const redditResults = await Promise.allSettled(
       subreddits.map(async (sub) => {
-        const response = await axios.get(`https://www.reddit.com/r/${sub}/new.json?limit=10`, {
-          headers: { 
-            'User-Agent': 'web:apex-wholesale:v1.0.0 (by /u/no_user_yet)',
-            'Accept': 'application/json'
-          },
-          timeout: 5000 // 5s timeout per subreddit
-        });
-        return { sub, posts: response.data.data.children };
+        let posts = [];
+        try {
+          // Try JSON first (more data)
+          const response = await axios.get(`https://www.reddit.com/r/${sub}/new.json?limit=15`, {
+            headers: { 
+              'User-Agent': 'web:apex-wholesale:v1.0.0 (by /u/no_user_yet)',
+              'Accept': 'application/json'
+            },
+            timeout: 4000
+          });
+          posts = response.data.data.children.map(p => ({
+            id: p.data.id,
+            title: p.data.title,
+            content: p.data.selftext,
+            url: `https://reddit.com${p.data.permalink}`,
+            created_utc: p.data.created_utc
+          }));
+        } catch (jsonErr) {
+          console.warn(`JSON blocked for r/${sub}, trying RSS...`);
+          // Fallback to RSS
+          try {
+            const feed = await parser.parseURL(`https://www.reddit.com/r/${sub}/new/.rss`);
+            posts = feed.items.map(item => ({
+              id: item.id.split('_').pop() || item.guid,
+              title: item.title,
+              content: item.contentSnippet || item.content || '',
+              url: item.link,
+              created_utc: new Date(item.isoDate).getTime() / 1000
+            }));
+          } catch (rssErr) {
+            console.error(`RSS also failed for r/${sub}:`, rssErr.message);
+            throw rssErr;
+          }
+        }
+        return { sub, posts };
       })
     );
 
@@ -110,12 +144,10 @@ app.get('/api/leads', async (req, res) => {
     for (const result of redditResults) {
       if (result.status === 'fulfilled') {
         const { sub, posts } = result.value;
-        for (const post of posts) {
-          const data = post.data;
-          if (data.stickied) continue;
+        for (const data of posts) {
           if (existingIds.has(data.id)) continue;
 
-          const combinedText = (data.title + ' ' + (data.selftext || '')).toLowerCase();
+          const combinedText = (data.title + ' ' + (data.content || '')).toLowerCase();
           if (spamKeywords.some(kw => combinedText.includes(kw.toLowerCase()))) continue;
           
           newLeadsFromReddit.push({
@@ -124,16 +156,14 @@ app.get('/api/leads', async (req, res) => {
             source: 'reddit',
             layer: 'gray',
             title: `[r/${sub}] ${data.title}`,
-            content: (data.selftext || '').substring(0, 1000),
+            content: (data.content || '').substring(0, 1000),
             budget: 'Unknown',
             location: 'Remote/Unknown',
             time: new Date(data.created_utc * 1000).toISOString(),
             matchKeywords: [],
-            url: `https://reddit.com${data.permalink}`
+            url: data.url
           });
         }
-      } else {
-        console.error(`Failed to fetch from Reddit: ${result.reason.message}`);
       }
     }
 
@@ -255,17 +285,20 @@ app.get('/api/debug', async (req, res) => {
 
   // Check Reddit (Sample)
   try {
-    const response = await axios.get('https://www.reddit.com/r/cars/new.json?limit=1', {
+    const jsonRes = await axios.get('https://www.reddit.com/r/cars/new.json?limit=1', {
       headers: { 'User-Agent': 'web:apex-wholesale:v1.0.0 (by /u/no_user_yet)' },
-      timeout: 5000
+      timeout: 3000
     });
-    diagnostics.reddit = { status: 'Connected', statusCode: response.status };
+    diagnostics.reddit.json = { status: 'Connected', statusCode: jsonRes.status };
   } catch (err) {
-    diagnostics.reddit = { 
-      status: 'Blocked', 
-      statusCode: err.response?.status,
-      message: err.message 
-    };
+    diagnostics.reddit.json = { status: 'Blocked', statusCode: err.response?.status, message: err.message };
+  }
+
+  try {
+    const feed = await parser.parseURL('https://www.reddit.com/r/cars/new/.rss');
+    diagnostics.reddit.rss = { status: 'Connected', title: feed.title };
+  } catch (err) {
+    diagnostics.reddit.rss = { status: 'Blocked', message: err.message };
   }
 
   res.json(diagnostics);
