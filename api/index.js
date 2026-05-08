@@ -329,6 +329,47 @@ app.get('/api/debug', async (req, res) => {
       subreddits: settings.niches?.[niche]?.subreddits || [],
       blacklistCount: settings.blacklist?.length || 0
     };
+
+    // --- LIVE FETCH TEST ---
+    const testSub = 'cars';
+    const fetchTest = { sub: testSub, step: 'Starting' };
+    try {
+      fetchTest.step = 'Fetching RSS';
+      const feed = await parser.parseURL(`https://www.reddit.com/r/${testSub}/new/.rss`);
+      fetchTest.postsFound = feed.items.length;
+      
+      const sample = feed.items[0];
+      const leadToSave = {
+        id: sample.id?.split('_')?.pop() || sample.guid || `test-${Date.now()}`,
+        niche: niche,
+        source: 'reddit',
+        layer: 'gray',
+        title: `[TEST] ${sample.title}`,
+        content: (sample.contentSnippet || sample.content || '').substring(0, 500),
+        budget: 'Unknown',
+        location: 'Remote/Unknown',
+        time: new Date().toISOString(),
+        url: sample.link
+      };
+      
+      fetchTest.step = 'Saving to DB';
+      fetchTest.leadId = leadToSave.id;
+      const { error: saveError } = await supabase.from('leads').insert([leadToSave]);
+      
+      if (saveError) {
+        fetchTest.status = 'Failed';
+        fetchTest.error = saveError.message;
+      } else {
+        fetchTest.status = 'Success';
+        // Clean up
+        await supabase.from('leads').delete().eq('id', leadToSave.id);
+      }
+    } catch (err) {
+      fetchTest.status = 'Error';
+      fetchTest.error = err.message;
+    }
+    diagnostics.liveFetchTest = fetchTest;
+
   } catch (err) {
     diagnostics.supabase = { status: 'Failed', error: err.message };
   }
