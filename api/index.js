@@ -330,45 +330,57 @@ app.get('/api/debug', async (req, res) => {
       blacklistCount: settings.blacklist?.length || 0
     };
 
-    // --- LIVE FETCH TEST ---
-    const testSub = 'cars';
-    const fetchTest = { sub: testSub, step: 'Starting' };
+    // --- FULL FETCH REPORT ---
+    const fetchReport = { niche: niche, steps: [] };
     try {
-      fetchTest.step = 'Fetching RSS';
-      const feed = await parser.parseURL(`https://www.reddit.com/r/${testSub}/new/.rss`);
-      fetchTest.postsFound = feed.items.length;
+      const feed = await parser.parseURL(`https://www.reddit.com/r/cars/new/.rss`);
+      fetchReport.rawCount = feed.items.length;
       
-      const sample = feed.items[0];
-      const leadToSave = {
-        id: sample.id?.split('_')?.pop() || sample.guid || `test-${Date.now()}`,
-        niche: niche,
-        source: 'reddit',
-        layer: 'gray',
-        title: `[TEST] ${sample.title}`,
-        content: (sample.contentSnippet || sample.content || '').substring(0, 500),
-        budget: 'Unknown',
-        location: 'Remote/Unknown',
-        time: new Date().toISOString(),
-        url: sample.link
-      };
+      const spamKeywords = settings.blacklist || [];
+      const processed = feed.items.map(item => {
+        const title = item.title;
+        const content = item.contentSnippet || item.content || '';
+        const combinedText = (title + ' ' + content).toLowerCase();
+        const hit = spamKeywords.find(kw => combinedText.includes(kw.toLowerCase()));
+        return {
+          title: title.substring(0, 30) + '...',
+          isSpam: !!hit,
+          spamKeyword: hit || null
+        };
+      });
       
-      fetchTest.step = 'Saving to DB';
-      fetchTest.leadId = leadToSave.id;
-      const { error: saveError } = await supabase.from('leads').insert([leadToSave]);
+      fetchReport.filteredCount = processed.filter(p => !p.isSpam).length;
+      fetchReport.sampleAnalysis = processed.slice(0, 5);
       
-      if (saveError) {
-        fetchTest.status = 'Failed';
-        fetchTest.error = saveError.message;
+      // Do one real save (and don't delete it this time so you can see it!)
+      const realSample = feed.items.find(item => {
+        const combined = (item.title + ' ' + (item.contentSnippet || '')).toLowerCase();
+        return !spamKeywords.some(kw => combined.includes(kw.toLowerCase()));
+      });
+
+      if (realSample) {
+        const lead = {
+          id: realSample.id?.split('_')?.pop() || realSample.guid || `real-${Date.now()}`,
+          niche: niche,
+          source: 'reddit',
+          layer: 'gray',
+          title: `[LIVE] ${realSample.title}`,
+          content: (realSample.contentSnippet || realSample.content || '').substring(0, 500),
+          budget: 'Unknown',
+          location: 'Remote/Unknown',
+          time: new Date().toISOString(),
+          url: realSample.link
+        };
+        const { error: finalError } = await supabase.from('leads').insert([lead]);
+        fetchReport.finalSaveStatus = finalError ? `Failed: ${finalError.message}` : 'Success! Saved 1 lead.';
       } else {
-        fetchTest.status = 'Success';
-        // Clean up
-        await supabase.from('leads').delete().eq('id', leadToSave.id);
+        fetchReport.finalSaveStatus = 'No non-spam leads found to save.';
       }
+
     } catch (err) {
-      fetchTest.status = 'Error';
-      fetchTest.error = err.message;
+      fetchReport.error = err.message;
     }
-    diagnostics.liveFetchTest = fetchTest;
+    diagnostics.fullFetchReport = fetchReport;
 
   } catch (err) {
     diagnostics.supabase = { status: 'Failed', error: err.message };
