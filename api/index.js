@@ -277,16 +277,24 @@ app.get('/api/debug', async (req, res) => {
 
   // Check Supabase
   try {
-    const { count, error } = await supabase.from('settings').select('*', { count: 'exact', head: true });
+    const { count, error } = await supabase.from('leads').select('*', { count: 'exact', head: true });
+    const { count: settingsCount } = await supabase.from('settings').select('*', { count: 'exact', head: true });
     if (error) throw error;
-    diagnostics.supabase = { status: 'Connected', settingsCount: count };
+    diagnostics.supabase = { 
+      status: 'Connected', 
+      settingsCount: settingsCount,
+      totalLeadsInDb: count 
+    };
   } catch (err) {
     diagnostics.supabase = { status: 'Failed', error: err.message };
   }
 
   // Check Reddit (Sample)
   try {
-    const jsonRes = await axios.get('https://www.reddit.com/r/cars/new.json?limit=1', {
+    const niche = req.query.niche || 'cars';
+    diagnostics.requestedNiche = niche;
+    
+    const jsonRes = await axios.get(`https://www.reddit.com/r/cars/new.json?limit=1`, {
       headers: { 'User-Agent': 'web:apex-wholesale:v1.0.0 (by /u/no_user_yet)' },
       timeout: 3000
     });
