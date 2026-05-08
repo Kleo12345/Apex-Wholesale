@@ -283,8 +283,27 @@ app.get('/api/debug', async (req, res) => {
     diagnostics.supabase = { 
       status: 'Connected', 
       settingsCount: settingsCount,
-      totalLeadsInDb: count 
+      totalLeadsInDb: count,
+      insertTest: null
     };
+
+    // Try a test insert
+    const testId = `test-${Date.now()}`;
+    const { error: testError } = await supabase.from('leads').insert([{
+      id: testId,
+      niche: 'debug',
+      title: 'Debug Test lead',
+      content: 'This is a test to verify database writes.',
+      time: new Date().toISOString()
+    }]);
+
+    if (testError) {
+      diagnostics.supabase.insertTest = `Failed: ${testError.message} (${testError.code})`;
+    } else {
+      diagnostics.supabase.insertTest = 'Success! Database is writable.';
+      // Clean up the test lead
+      await supabase.from('leads').delete().eq('id', testId);
+    }
   } catch (err) {
     diagnostics.supabase = { status: 'Failed', error: err.message };
   }
