@@ -17,6 +17,16 @@ const supabaseKey = process.env.SUPABASE_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 // --- DB HELPERS ---
+const validateEnv = () => {
+  const required = ['SUPABASE_URL', 'SUPABASE_KEY'];
+  const missing = required.filter(k => !process.env[k]);
+  if (missing.length > 0) {
+    console.error(`CRITICAL: Missing environment variables: ${missing.join(', ')}`);
+    return false;
+  }
+  return true;
+};
+
 const getSettings = async () => {
   try {
     const { data, error } = await supabase
@@ -28,7 +38,7 @@ const getSettings = async () => {
     if (error) throw error;
     return data.data;
   } catch (error) {
-    console.error('Error reading settings from Supabase:', error);
+    console.error('Error reading settings from Supabase:', error.message);
     return { 
       activeNiche: 'cars',
       niches: {
@@ -49,7 +59,7 @@ const saveSettings = async (settings) => {
     if (error) throw error;
     return true;
   } catch (error) {
-    console.error('Error saving settings to Supabase:', error);
+    console.error('Error saving settings to Supabase:', error.message);
     return false;
   }
 };
@@ -57,62 +67,83 @@ const saveSettings = async (settings) => {
 // --- ENDPOINTS ---
 
 app.get('/api/leads', async (req, res) => {
+  if (!validateEnv()) {
+    return res.status(500).json({ error: 'Server configuration error (Missing ENV)' });
+  }
+
   try {
     const niche = req.query.niche || 'cars';
     const settings = await getSettings();
     
+    // 1. Fetch existing leads to avoid duplicates
     const { data: existingLeads, error: fetchError } = await supabase
       .from('leads')
-      .select('*')
+      .select('id')
       .eq('niche', niche)
-      .order('created_at', { ascending: false })
-      .limit(100);
+      .limit(200);
     
-    if (fetchError) throw fetchError;
+    if (fetchError) {
+      console.error('Supabase fetch error:', fetchError.message);
+      // Don't crash, just proceed with empty existing list
+    }
 
+    const existingIds = new Set((existingLeads || []).map(l => l.id));
     const subreddits = settings.niches?.[niche]?.subreddits || [];
-    const newLeadsFromReddit = [];
     
-    for (const sub of subreddits) {
-      try {
-        const response = await axios.get(`https://www.reddit.com/r/${sub}/new.json?limit=5`, {
-          headers: { 'User-Agent': 'ApexWholesale/1.0' }
+    // 2. Fetch from Reddit in parallel
+    const redditResults = await Promise.allSettled(
+      subreddits.map(async (sub) => {
+        const response = await axios.get(`https://www.reddit.com/r/${sub}/new.json?limit=10`, {
+          headers: { 
+            'User-Agent': 'web:apex-wholesale:v1.0.0 (by /u/no_user_yet)',
+            'Accept': 'application/json'
+          },
+          timeout: 5000 // 5s timeout per subreddit
         });
-        
-        const posts = response.data.data.children;
+        return { sub, posts: response.data.data.children };
+      })
+    );
+
+    const newLeadsFromReddit = [];
+    const spamKeywords = settings.blacklist || [];
+
+    for (const result of redditResults) {
+      if (result.status === 'fulfilled') {
+        const { sub, posts } = result.value;
         for (const post of posts) {
           const data = post.data;
           if (data.stickied) continue;
+          if (existingIds.has(data.id)) continue;
 
-          const spamKeywords = settings.blacklist || [];
-          const combinedText = (data.title + ' ' + data.selftext).toLowerCase();
+          const combinedText = (data.title + ' ' + (data.selftext || '')).toLowerCase();
           if (spamKeywords.some(kw => combinedText.includes(kw.toLowerCase()))) continue;
           
-          if (existingLeads.find(l => l.id === data.id)) continue;
-
           newLeadsFromReddit.push({
             id: data.id,
             niche: niche,
             source: 'reddit',
             layer: 'gray',
             title: `[r/${sub}] ${data.title}`,
-            content: data.selftext.substring(0, 500) + (data.selftext.length > 500 ? '...' : ''),
+            content: (data.selftext || '').substring(0, 1000),
             budget: 'Unknown',
             location: 'Remote/Unknown',
-            time: new Date(data.created_utc * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}),
+            time: new Date(data.created_utc * 1000).toISOString(),
             matchKeywords: [],
             url: `https://reddit.com${data.permalink}`
           });
         }
-      } catch (err) {
-        console.error(`Failed to fetch r/${sub}:`, err.message);
+      } else {
+        console.error(`Failed to fetch from Reddit: ${result.reason.message}`);
       }
     }
 
+    // 3. Batch insert new leads
     if (newLeadsFromReddit.length > 0) {
-      await supabase.from('leads').insert(newLeadsFromReddit);
+      const { error: insertError } = await supabase.from('leads').insert(newLeadsFromReddit);
+      if (insertError) console.error('Error inserting new leads:', insertError.message);
     }
 
+    // 4. Return the latest leads from DB
     const { data: finalLeads } = await supabase
       .from('leads')
       .select('*')
@@ -122,8 +153,8 @@ app.get('/api/leads', async (req, res) => {
 
     res.json(finalLeads || []);
   } catch (error) {
-    console.error('Error fetching live leads:', error.message);
-    res.json([]);
+    console.error('Fatal error in /api/leads:', error.message);
+    res.status(500).json({ error: error.message });
   }
 });
 

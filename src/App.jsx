@@ -252,33 +252,41 @@ export default function App() {
   const [newSubreddit, setNewSubreddit] = useState('');
   const [newBlacklistKeyword, setNewBlacklistKeyword] = useState('');
   const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState(null);
   const [userSettings, setUserSettings] = useState({
     telegramToken: '',
     telegramChatId: '',
     matchAlerts: true
   });
 
-  const fetchAllData = () => {
-    fetch(`/api/leads?niche=${activeNiche}`)
-      .then(res => res.json())
-      .then(data => {
-        setLeads(data);
-      });
-      
-    fetch(`/api/supply?niche=${activeNiche}`)
-      .then(res => res.json())
-      .then(setSupply);
-
-    fetch(`/api/saved-leads`)
-      .then(res => res.json())
-      .then(setSavedLeads);
-
-    fetch('/api/settings')
-      .then(res => res.json())
-      .then(data => {
-        if (data.niches?.[activeNiche]) setMonitoredSubreddits(data.niches[activeNiche].subreddits);
-        if (data.blacklist) setBlacklist(data.blacklist);
-      });
+  const fetchAllData = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const leadsRes = await fetch(`/api/leads?niche=${activeNiche}`);
+      const leadsData = await leadsRes.json();
+      if (leadsData.error) throw new Error(leadsData.error);
+      setLeads(leadsData);
+        
+      const supplyRes = await fetch(`/api/supply?niche=${activeNiche}`);
+      const supplyData = await supplyRes.json();
+      setSupply(supplyData);
+  
+      const savedRes = await fetch(`/api/saved-leads`);
+      const savedData = await savedRes.json();
+      setSavedLeads(savedData);
+  
+      const settingsRes = await fetch('/api/settings');
+      const settingsData = await settingsRes.json();
+      if (settingsData.niches?.[activeNiche]) setMonitoredSubreddits(settingsData.niches[activeNiche].subreddits);
+      if (settingsData.blacklist) setBlacklist(settingsData.blacklist);
+    } catch (err) {
+      console.error('Fetch error:', err);
+      setError(err.message);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -673,9 +681,16 @@ export default function App() {
             <div className="flex justify-between items-center">
               <div>
                 <h1 className="text-h2">Live Feed</h1>
-                <p className="text-small">{leadsToShow.length} leads found across monitored subreddits</p>
+                <p className="text-small">
+                  {isLoading ? 'Fetching fresh leads...' : `${leadsToShow.length} leads found across monitored subreddits`}
+                </p>
+                {error && <p className="text-micro text-red-400 mt-1">⚠️ {error}</p>}
               </div>
-              <button className="icon-btn" onClick={fetchAllData}>
+              <button 
+                className={`icon-btn ${isLoading ? 'animate-spin' : ''}`} 
+                onClick={fetchAllData}
+                disabled={isLoading}
+              >
                 <RefreshCw size={18} />
               </button>
             </div>
