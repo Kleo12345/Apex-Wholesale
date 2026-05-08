@@ -169,9 +169,15 @@ app.get('/api/leads', async (req, res) => {
     }
 
     // 3. Batch insert new leads
+    let insertStatus = "No new leads";
     if (newLeadsFromReddit.length > 0) {
       const { error: insertError } = await supabase.from('leads').insert(newLeadsFromReddit);
-      if (insertError) console.error('Error inserting new leads:', insertError.message);
+      if (insertError) {
+        console.error('Error inserting new leads:', insertError.message);
+        insertStatus = `Error: ${insertError.message}`;
+      } else {
+        insertStatus = `Success: Inserted ${newLeadsFromReddit.length} leads`;
+      }
     }
 
     // 4. Return the latest leads from DB
@@ -182,7 +188,16 @@ app.get('/api/leads', async (req, res) => {
       .order('created_at', { ascending: false })
       .limit(50);
 
-    res.json(finalLeads || []);
+    res.json({
+      leads: finalLeads || [],
+      debug: {
+        niche,
+        subredditsChecked: subreddits,
+        foundOnReddit: redditResults.filter(r => r.status === 'fulfilled').reduce((acc, r) => acc + r.value.posts.length, 0),
+        newLeadsFound: newLeadsFromReddit.length,
+        insertStatus
+      }
+    });
   } catch (error) {
     console.error('Fatal error in /api/leads:', error.message);
     res.status(500).json({ error: error.message });
@@ -304,6 +319,14 @@ app.get('/api/debug', async (req, res) => {
       // Clean up the test lead
       await supabase.from('leads').delete().eq('id', testId);
     }
+    
+    // Check Settings Detail
+    const settings = await getSettings();
+    diagnostics.settingsDetail = {
+      niche: niche,
+      subreddits: settings.niches?.[niche]?.subreddits || [],
+      blacklistCount: settings.blacklist?.length || 0
+    };
   } catch (err) {
     diagnostics.supabase = { status: 'Failed', error: err.message };
   }

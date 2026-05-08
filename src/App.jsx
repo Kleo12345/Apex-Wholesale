@@ -265,9 +265,14 @@ export default function App() {
     setError(null);
     try {
       const leadsRes = await fetch(`/api/leads?niche=${activeNiche}`);
-      const leadsData = await leadsRes.json();
-      if (leadsData.error) throw new Error(leadsData.error);
-      setLeads(leadsData);
+      const responseData = await leadsRes.json();
+      if (responseData.error) throw new Error(responseData.error);
+      setLeads(responseData.leads || []);
+      
+      // Log debug info if present
+      if (responseData.debug) {
+        console.log('Backend Lead Fetch Report:', responseData.debug);
+      }
         
       const supplyRes = await fetch(`/api/supply?niche=${activeNiche}`);
       const supplyData = await supplyRes.json();
