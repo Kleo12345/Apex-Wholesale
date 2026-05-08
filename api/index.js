@@ -279,7 +279,9 @@ app.post('/api/saved-leads', async (req, res) => {
 });
 
 app.get('/api/debug', async (req, res) => {
+  const niche = req.query.niche || 'cars';
   const diagnostics = {
+    requestedNiche: niche,
     env: {
       SUPABASE_URL: !!process.env.SUPABASE_URL,
       SUPABASE_KEY: !!process.env.SUPABASE_KEY ? 'Present (Hidden)' : 'Missing',
@@ -333,9 +335,6 @@ app.get('/api/debug', async (req, res) => {
 
   // Check Reddit (Sample)
   try {
-    const niche = req.query.niche || 'cars';
-    diagnostics.requestedNiche = niche;
-    
     const jsonRes = await axios.get(`https://www.reddit.com/r/cars/new.json?limit=1`, {
       headers: { 'User-Agent': 'web:apex-wholesale:v1.0.0 (by /u/no_user_yet)' },
       timeout: 3000
