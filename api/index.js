@@ -123,12 +123,13 @@ app.get('/api/leads', async (req, res) => {
           try {
             const feed = await parser.parseURL(`https://www.reddit.com/r/${sub}/new/.rss`);
             posts = feed.items.map(item => ({
-              id: item.id.split('_').pop() || item.guid,
+              id: item.id?.split('_')?.pop() || item.guid || Math.random().toString(36),
               title: item.title,
               content: item.contentSnippet || item.content || '',
               url: item.link,
-              created_utc: new Date(item.isoDate).getTime() / 1000
+              created_utc: item.isoDate ? new Date(item.isoDate).getTime() / 1000 : Date.now() / 1000
             }));
+            console.log(`Successfully fetched ${posts.length} posts from RSS for r/${sub}`);
           } catch (rssErr) {
             console.error(`RSS also failed for r/${sub}:`, rssErr.message);
             throw rssErr;
@@ -296,7 +297,16 @@ app.get('/api/debug', async (req, res) => {
 
   try {
     const feed = await parser.parseURL('https://www.reddit.com/r/cars/new/.rss');
-    diagnostics.reddit.rss = { status: 'Connected', title: feed.title };
+    const firstItem = feed.items[0] || {};
+    diagnostics.reddit.rss = { 
+      status: 'Connected', 
+      title: feed.title,
+      samplePost: {
+        id: firstItem.id?.split('_')?.pop() || firstItem.guid,
+        title: firstItem.title,
+        date: firstItem.isoDate
+      }
+    };
   } catch (err) {
     diagnostics.reddit.rss = { status: 'Blocked', message: err.message };
   }
