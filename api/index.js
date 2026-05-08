@@ -149,7 +149,14 @@ app.get('/api/leads', async (req, res) => {
           if (existingIds.has(data.id)) continue;
 
           const combinedText = (data.title + ' ' + (data.content || '')).toLowerCase();
-          if (spamKeywords.some(kw => combinedText.includes(kw.toLowerCase()))) continue;
+          
+          // Smart blacklist: Match whole words only to avoid blocking things like "Valencia" for "va"
+          const isSpam = spamKeywords.some(kw => {
+            const regex = new RegExp(`\\b${kw.toLowerCase()}\\b`, 'i');
+            return regex.test(combinedText);
+          });
+
+          if (isSpam) continue;
           
           newLeadsFromReddit.push({
             id: data.id,
@@ -341,7 +348,12 @@ app.get('/api/debug', async (req, res) => {
         const title = item.title;
         const content = item.contentSnippet || item.content || '';
         const combinedText = (title + ' ' + content).toLowerCase();
-        const hit = spamKeywords.find(kw => combinedText.includes(kw.toLowerCase()));
+        
+        const hit = spamKeywords.find(kw => {
+          const regex = new RegExp(`\\b${kw.toLowerCase()}\\b`, 'i');
+          return regex.test(combinedText);
+        });
+        
         return {
           title: title.substring(0, 30) + '...',
           isSpam: !!hit,
@@ -352,10 +364,13 @@ app.get('/api/debug', async (req, res) => {
       fetchReport.filteredCount = processed.filter(p => !p.isSpam).length;
       fetchReport.sampleAnalysis = processed.slice(0, 5);
       
-      // Do one real save (and don't delete it this time so you can see it!)
+      // Do one real save
       const realSample = feed.items.find(item => {
         const combined = (item.title + ' ' + (item.contentSnippet || '')).toLowerCase();
-        return !spamKeywords.some(kw => combined.includes(kw.toLowerCase()));
+        return !spamKeywords.some(kw => {
+          const regex = new RegExp(`\\b${kw.toLowerCase()}\\b`, 'i');
+          return regex.test(combined);
+        });
       });
 
       if (realSample) {
