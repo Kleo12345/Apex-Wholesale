@@ -303,7 +303,19 @@ app.get('/api/debug', async (req, res) => {
     const { count, error } = await supabase.from('leads').select('*', { count: 'exact', head: true });
     diagnostics.supabase = { status: error ? 'Error' : 'Connected', totalLeads: count || 0 };
     
-    const settings = await getSettings();
+    // Check Columns
+    try {
+      const { data: cols } = await supabase.rpc('get_column_names', { table_name: 'leads' });
+      // If RPC fails, try a sample select
+      if (!cols) {
+        const { data: sample } = await supabase.from('leads').select('*').limit(1);
+        diagnostics.leadsColumns = sample && sample[0] ? Object.keys(sample[0]) : 'Could not detect columns';
+      } else {
+        diagnostics.leadsColumns = cols;
+      }
+    } catch (e) {
+      diagnostics.leadsColumns = 'Error detecting columns';
+    }
     const niches = ['cars', 'houses'];
 
     for (const niche of niches) {
