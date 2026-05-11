@@ -97,15 +97,20 @@ app.get('/api/leads', async (req, res) => {
     const existingIds = new Set((existingLeads || []).map(l => l.id));
     const subreddits = settings.niches?.[niche]?.subreddits || [];
 
+    // Force no-cache for Vercel
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
     // 2. Fetch from Reddit in parallel
     const redditResults = await Promise.allSettled(
       subreddits.map(async (sub) => {
         let posts = [];
         try {
-          // Try JSON first (more data)
-          const response = await axios.get(`https://www.reddit.com/r/${sub}/new.json?limit=15`, {
-            headers: {
-              'User-Agent': 'web:apex-wholesale:v1.0.0 (by /u/no_user_yet)',
+          // Try JSON first with cache-buster
+          const response = await axios.get(`https://www.reddit.com/r/${sub}/new.json?limit=15&t=${Date.now()}`, {
+            headers: { 
+              'User-Agent': `web:apex-wholesale:v1.0.0-${Date.now()}`,
               'Accept': 'application/json'
             },
             timeout: 4000
@@ -118,10 +123,9 @@ app.get('/api/leads', async (req, res) => {
             created_utc: p.data.created_utc
           }));
         } catch (jsonErr) {
-          console.warn(`JSON blocked for r/${sub}, trying RSS...`);
-          // Fallback to RSS
+          // Fallback to RSS with cache-buster
           try {
-            const feed = await parser.parseURL(`https://www.reddit.com/r/${sub}/new/.rss`);
+            const feed = await parser.parseURL(`https://www.reddit.com/r/${sub}/new/.rss?t=${Date.now()}`);
             posts = feed.items.map(item => ({
               id: item.id?.split('_')?.pop() || item.guid || Math.random().toString(36),
               title: item.title,
@@ -129,10 +133,8 @@ app.get('/api/leads', async (req, res) => {
               url: item.link,
               created_utc: item.isoDate ? new Date(item.isoDate).getTime() / 1000 : Date.now() / 1000
             }));
-            console.log(`Successfully fetched ${posts.length} posts from RSS for r/${sub}`);
           } catch (rssErr) {
-            console.error(`RSS also failed for r/${sub}:`, rssErr.message);
-            throw rssErr;
+            console.error(`Reddit fetch failed for r/${sub}:`, rssErr.message);
           }
         }
         return { sub, posts };

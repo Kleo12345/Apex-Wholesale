@@ -264,7 +264,7 @@ export default function App() {
     setIsLoading(true);
     setError(null);
     try {
-      const leadsRes = await fetch(`/api/leads?niche=${activeNiche}`);
+      const leadsRes = await fetch(`/api/leads?niche=${activeNiche}&t=${Date.now()}`);
       const responseData = await leadsRes.json();
       if (responseData.error) throw new Error(responseData.error);
       setLeads(responseData.leads || []);
