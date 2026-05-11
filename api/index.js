@@ -190,7 +190,7 @@ app.get('/api/leads', async (req, res) => {
       .order('created_at', { ascending: false })
       .limit(100);
 
-    res.json(finalLeads || []);
+    res.json({ leads: finalLeads || [] });
   } catch (error) {
     console.error('API Error:', error.message);
     res.status(500).json({ error: error.message });
