@@ -201,6 +201,7 @@ app.get('/api/leads', async (req, res) => {
       leads: finalLeads || [],
       debug: {
         niche,
+        serverTime: new Date().toISOString(),
         subredditsChecked: subreddits,
         foundOnReddit: redditResults.filter(r => r.status === 'fulfilled').reduce((acc, r) => acc + r.value.posts.length, 0),
         newLeadsFound: newLeadsFromReddit.length,
