@@ -188,7 +188,7 @@ app.get('/api/leads', async (req, res) => {
       .select('*')
       .eq('niche', niche)
       .order('created_at', { ascending: false })
-      .limit(50);
+      .limit(100);
 
     res.json(finalLeads || []);
   } catch (error) {
