@@ -180,16 +180,9 @@ app.get('/api/leads', async (req, res) => {
     // 3. Batch insert new leads
     let insertStatus = "No new leads";
     if (newLeadsFromReddit.length > 0) {
-      const { error: insertError } = await supabase.from('leads').insert(newLeadsFromReddit);
-      if (insertError) {
-        console.error('Error inserting new leads:', insertError.message);
-        insertStatus = `Error: ${insertError.message}`;
-      } else {
-        insertStatus = `Success: Inserted ${newLeadsFromReddit.length} leads`;
-      }
+      await supabase.from('leads').insert(newLeadsFromReddit);
     }
 
-    // 4. Return the latest leads from DB
     const { data: finalLeads } = await supabase
       .from('leads')
       .select('*')
@@ -197,19 +190,9 @@ app.get('/api/leads', async (req, res) => {
       .order('created_at', { ascending: false })
       .limit(50);
 
-    res.json({
-      leads: finalLeads || [],
-      debug: {
-        niche,
-        serverTime: new Date().toISOString(),
-        subredditsChecked: subreddits,
-        foundOnReddit: redditResults.filter(r => r.status === 'fulfilled').reduce((acc, r) => acc + r.value.posts.length, 0),
-        newLeadsFound: newLeadsFromReddit.length,
-        insertStatus
-      }
-    });
+    res.json(finalLeads || []);
   } catch (error) {
-    console.error('Fatal error in /api/leads:', error.message);
+    console.error('API Error:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -286,58 +269,6 @@ app.post('/api/saved-leads', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
-
-app.get('/api/debug', async (req, res) => {
-  const diagnostics = {
-    env: {
-      SUPABASE_URL: !!process.env.SUPABASE_URL,
-      SUPABASE_KEY: !!process.env.SUPABASE_KEY ? 'Present (Hidden)' : 'Missing',
-      GEMINI_API_KEY: !!process.env.GEMINI_API_KEY ? 'Present (Hidden)' : 'Missing',
-    },
-    supabase: { status: 'Checking...' },
-    nicheStatus: {}
-  };
-
-  try {
-    const { count, error } = await supabase.from('leads').select('*', { count: 'exact', head: true });
-    diagnostics.supabase = { status: error ? 'Error' : 'Connected', totalLeads: count || 0 };
-    
-    // Check Columns
-    try {
-      const { data: cols } = await supabase.rpc('get_column_names', { table_name: 'leads' });
-      // If RPC fails, try a sample select
-      if (!cols) {
-        const { data: sample } = await supabase.from('leads').select('*').limit(1);
-        diagnostics.leadsColumns = sample && sample[0] ? Object.keys(sample[0]) : 'Could not detect columns';
-      } else {
-        diagnostics.leadsColumns = cols;
-      }
-    } catch (e) {
-      diagnostics.leadsColumns = 'Error detecting columns';
-    }
-    const settings = await getSettings();
-    const niches = ['cars', 'houses'];
-
-    for (const niche of niches) {
-      const subreddits = settings.niches?.[niche]?.subreddits || [];
-      const testSub = subreddits[0];
-      const status = { sub: testSub, rss: 'Pending' };
-
-      try {
-        const feed = await parser.parseURL(`https://www.reddit.com/r/${testSub}/new/.rss`);
-        status.rss = `Connected (${feed.items.length} posts found)`;
-        status.sampleTitle = feed.items[0]?.title.substring(0, 40) + '...';
-      } catch (e) {
-        status.rss = `Blocked: ${e.message}`;
-      }
-      diagnostics.nicheStatus[niche] = status;
-    }
-  } catch (err) {
-    diagnostics.supabase.status = `Failed: ${err.message}`;
-  }
-
-  res.json(diagnostics);
 });
 
 app.get('/api/settings', async (req, res) => {
