@@ -170,7 +170,7 @@ app.get('/api/leads', async (req, res) => {
             budget: 'Unknown',
             location: 'Remote/Unknown',
             time: new Date(data.created_utc * 1000).toISOString(),
-            matchKeywords: [],
+            matchkeywords: [],
             url: data.url
           });
         }
@@ -316,6 +316,7 @@ app.get('/api/debug', async (req, res) => {
     } catch (e) {
       diagnostics.leadsColumns = 'Error detecting columns';
     }
+    const settings = await getSettings();
     const niches = ['cars', 'houses'];
 
     for (const niche of niches) {
