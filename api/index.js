@@ -23,6 +23,105 @@ const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
+// --- REDDIT OAUTH ---
+// Reddit blocks unauthenticated requests from cloud/datacenter IPs (Vercel included)
+// on both /new.json and /new/.rss. Authenticated app-only OAuth is not subject to
+// that block, so it's the primary path; the old public endpoints stay as a fallback.
+const REDDIT_USER_AGENT = `web:apex-wholesale:v2.0.0 (by /u/${process.env.REDDIT_USERNAME || 'apex_wholesale_bot'})`;
+
+let redditToken = null;
+let redditTokenExpiry = 0;
+
+const getRedditToken = async () => {
+  if (redditToken && Date.now() < redditTokenExpiry) return redditToken;
+
+  const clientId = process.env.REDDIT_CLIENT_ID;
+  const clientSecret = process.env.REDDIT_CLIENT_SECRET;
+  if (!clientId || !clientSecret) return null;
+
+  const response = await axios.post(
+    'https://www.reddit.com/api/v1/access_token',
+    'grant_type=client_credentials',
+    {
+      auth: { username: clientId, password: clientSecret },
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': REDDIT_USER_AGENT
+      },
+      timeout: 5000
+    }
+  );
+
+  redditToken = response.data.access_token;
+  redditTokenExpiry = Date.now() + (response.data.expires_in - 60) * 1000;
+  return redditToken;
+};
+
+const withTimeout = (promise, ms) =>
+  Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))
+  ]);
+
+const fetchSubredditPosts = async (sub) => {
+  try {
+    const token = await getRedditToken();
+    if (token) {
+      const response = await axios.get(`https://oauth.reddit.com/r/${sub}/new`, {
+        params: { limit: 15 },
+        headers: { Authorization: `Bearer ${token}`, 'User-Agent': REDDIT_USER_AGENT },
+        timeout: 6000
+      });
+      return response.data.data.children.map(p => ({
+        id: p.data.id,
+        title: p.data.title,
+        content: p.data.selftext,
+        url: `https://reddit.com${p.data.permalink}`,
+        created_utc: p.data.created_utc
+      }));
+    }
+  } catch (err) {
+    console.error(`Reddit OAuth fetch failed for r/${sub}:`, err.message);
+  }
+
+  // Fallback: public endpoints (unreliable from cloud IPs, kept as a last resort
+  // for when REDDIT_CLIENT_ID/SECRET aren't configured yet)
+  try {
+    const response = await axios.get(`https://www.reddit.com/r/${sub}/new.json?limit=15&t=${Date.now()}`, {
+      headers: { 'User-Agent': REDDIT_USER_AGENT, Accept: 'application/json' },
+      timeout: 4000
+    });
+    return response.data.data.children.map(p => ({
+      id: p.data.id,
+      title: p.data.title,
+      content: p.data.selftext,
+      url: `https://reddit.com${p.data.permalink}`,
+      created_utc: p.data.created_utc
+    }));
+  } catch (jsonErr) {
+    try {
+      const xml = await withTimeout(
+        axios.get(`https://www.reddit.com/r/${sub}/new/.rss?t=${Date.now()}`, {
+          headers: { 'User-Agent': REDDIT_USER_AGENT },
+          timeout: 4000
+        }),
+        5000
+      );
+      const feed = await parser.parseString(xml.data);
+      return feed.items.map(item => ({
+        id: item.id?.split('_')?.pop() || item.guid || Math.random().toString(36),
+        title: item.title,
+        content: item.contentSnippet || item.content || '',
+        url: item.link,
+        created_utc: item.isoDate ? new Date(item.isoDate).getTime() / 1000 : Date.now() / 1000
+      }));
+    } catch (rssErr) {
+      console.error(`Reddit fetch (all paths) failed for r/${sub}:`, rssErr.message);
+      return [];
+    }
+  }
+};
+
 // --- DB HELPERS ---
 const validateEnv = () => {
   const required = ['SUPABASE_URL', 'SUPABASE_KEY'];
@@ -104,41 +203,7 @@ app.get('/api/leads', async (req, res) => {
 
     // 2. Fetch from Reddit in parallel
     const redditResults = await Promise.allSettled(
-      subreddits.map(async (sub) => {
-        let posts = [];
-        try {
-          // Try JSON first with cache-buster
-          const response = await axios.get(`https://www.reddit.com/r/${sub}/new.json?limit=15&t=${Date.now()}`, {
-            headers: { 
-              'User-Agent': `web:apex-wholesale:v1.0.0-${Date.now()}`,
-              'Accept': 'application/json'
-            },
-            timeout: 4000
-          });
-          posts = response.data.data.children.map(p => ({
-            id: p.data.id,
-            title: p.data.title,
-            content: p.data.selftext,
-            url: `https://reddit.com${p.data.permalink}`,
-            created_utc: p.data.created_utc
-          }));
-        } catch (jsonErr) {
-          // Fallback to RSS with cache-buster
-          try {
-            const feed = await parser.parseURL(`https://www.reddit.com/r/${sub}/new/.rss?t=${Date.now()}`);
-            posts = feed.items.map(item => ({
-              id: item.id?.split('_')?.pop() || item.guid || Math.random().toString(36),
-              title: item.title,
-              content: item.contentSnippet || item.content || '',
-              url: item.link,
-              created_utc: item.isoDate ? new Date(item.isoDate).getTime() / 1000 : Date.now() / 1000
-            }));
-          } catch (rssErr) {
-            console.error(`Reddit fetch failed for r/${sub}:`, rssErr.message);
-          }
-        }
-        return { sub, posts };
-      })
+      subreddits.map(async (sub) => ({ sub, posts: await fetchSubredditPosts(sub) }))
     );
 
     const newLeadsFromReddit = [];
