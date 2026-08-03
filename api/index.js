@@ -5,6 +5,7 @@ import axios from 'axios';
 import { createClient } from '@supabase/supabase-js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import Parser from 'rss-parser';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 
 const parser = new Parser({
   headers: {
@@ -23,11 +24,16 @@ const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-// --- REDDIT OAUTH ---
+// --- REDDIT ACCESS ---
 // Reddit blocks unauthenticated requests from cloud/datacenter IPs (Vercel included)
-// on both /new.json and /new/.rss. Authenticated app-only OAuth is not subject to
-// that block, so it's the primary path; the old public endpoints stay as a fallback.
+// on both /new.json and /new/.rss. Reddit is also currently refusing to issue new API
+// app credentials to most accounts ("Responsible Builder Policy" rollout), so OAuth
+// isn't reliably available either. PROXY_URL routes requests through a non-datacenter
+// IP (e.g. a residential proxy) to sidestep the IP block directly; OAuth is tried first
+// in case REDDIT_CLIENT_ID/SECRET are ever set from an existing app.
 const REDDIT_USER_AGENT = `web:apex-wholesale:v2.0.0 (by /u/${process.env.REDDIT_USERNAME || 'apex_wholesale_bot'})`;
+
+const proxyAgent = process.env.PROXY_URL ? new HttpsProxyAgent(process.env.PROXY_URL) : undefined;
 
 let redditToken = null;
 let redditTokenExpiry = 0;
@@ -48,6 +54,7 @@ const getRedditToken = async () => {
         'Content-Type': 'application/x-www-form-urlencoded',
         'User-Agent': REDDIT_USER_AGENT
       },
+      httpsAgent: proxyAgent,
       timeout: 5000
     }
   );
@@ -70,6 +77,7 @@ const fetchSubredditPosts = async (sub) => {
       const response = await axios.get(`https://oauth.reddit.com/r/${sub}/new`, {
         params: { limit: 15 },
         headers: { Authorization: `Bearer ${token}`, 'User-Agent': REDDIT_USER_AGENT },
+        httpsAgent: proxyAgent,
         timeout: 6000
       });
       return response.data.data.children.map(p => ({
@@ -89,6 +97,7 @@ const fetchSubredditPosts = async (sub) => {
   try {
     const response = await axios.get(`https://www.reddit.com/r/${sub}/new.json?limit=15&t=${Date.now()}`, {
       headers: { 'User-Agent': REDDIT_USER_AGENT, Accept: 'application/json' },
+      httpsAgent: proxyAgent,
       timeout: 4000
     });
     return response.data.data.children.map(p => ({
@@ -103,6 +112,7 @@ const fetchSubredditPosts = async (sub) => {
       const xml = await withTimeout(
         axios.get(`https://www.reddit.com/r/${sub}/new/.rss?t=${Date.now()}`, {
           headers: { 'User-Agent': REDDIT_USER_AGENT },
+          httpsAgent: proxyAgent,
           timeout: 4000
         }),
         5000
