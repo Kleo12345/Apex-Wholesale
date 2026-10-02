@@ -33,7 +33,20 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 // in case REDDIT_CLIENT_ID/SECRET are ever set from an existing app.
 const REDDIT_USER_AGENT = `web:apex-wholesale:v2.0.0 (by /u/${process.env.REDDIT_USERNAME || 'apex_wholesale_bot'})`;
 
-const proxyAgent = process.env.PROXY_URL ? new HttpsProxyAgent(process.env.PROXY_URL) : undefined;
+// A single shared proxy IP gets rate-limited by Reddit (429) once enough requests go
+// through it. PROXY_URLS (comma/newline separated) rotates across a pool so no single
+// IP absorbs all the traffic. PROXY_URL (singular) still works as a one-proxy fallback.
+const proxyAgents = (process.env.PROXY_URLS || process.env.PROXY_URL || '')
+  .split(/[\n,]/)
+  .map(u => u.trim())
+  .filter(Boolean)
+  .map(u => new HttpsProxyAgent(u));
+
+let proxyRotationIndex = 0;
+const nextProxyAgent = () => {
+  if (proxyAgents.length === 0) return undefined;
+  return proxyAgents[proxyRotationIndex++ % proxyAgents.length];
+};
 
 let redditToken = null;
 let redditTokenExpiry = 0;
@@ -54,7 +67,7 @@ const getRedditToken = async () => {
         'Content-Type': 'application/x-www-form-urlencoded',
         'User-Agent': REDDIT_USER_AGENT
       },
-      httpsAgent: proxyAgent,
+      httpsAgent: nextProxyAgent(),
       timeout: 5000
     }
   );
@@ -71,13 +84,15 @@ const withTimeout = (promise, ms) =>
   ]);
 
 const fetchSubredditPosts = async (sub) => {
+  const agent = nextProxyAgent();
+
   try {
     const token = await getRedditToken();
     if (token) {
       const response = await axios.get(`https://oauth.reddit.com/r/${sub}/new`, {
         params: { limit: 15 },
         headers: { Authorization: `Bearer ${token}`, 'User-Agent': REDDIT_USER_AGENT },
-        httpsAgent: proxyAgent,
+        httpsAgent: agent,
         timeout: 6000
       });
       return response.data.data.children.map(p => ({
@@ -97,7 +112,7 @@ const fetchSubredditPosts = async (sub) => {
   try {
     const response = await axios.get(`https://www.reddit.com/r/${sub}/new.json?limit=15&t=${Date.now()}`, {
       headers: { 'User-Agent': REDDIT_USER_AGENT, Accept: 'application/json' },
-      httpsAgent: proxyAgent,
+      httpsAgent: agent,
       timeout: 4000
     });
     return response.data.data.children.map(p => ({
@@ -112,7 +127,7 @@ const fetchSubredditPosts = async (sub) => {
       const xml = await withTimeout(
         axios.get(`https://www.reddit.com/r/${sub}/new/.rss?t=${Date.now()}`, {
           headers: { 'User-Agent': REDDIT_USER_AGENT },
-          httpsAgent: proxyAgent,
+          httpsAgent: agent,
           timeout: 4000
         }),
         5000
